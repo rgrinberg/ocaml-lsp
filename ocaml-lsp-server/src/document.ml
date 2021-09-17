@@ -85,7 +85,8 @@ end
 
 type t =
   { tdoc : Text_document.t
-  ; pipeline : Mpipeline.t
+  ; msource : Msource.t Lazy.t
+  ; pipeline : Mpipeline.t Lazy_fiber.t
   ; merlin : Scheduler.thread
   ; timer : Scheduler.timer
   }
@@ -98,7 +99,7 @@ let syntax t = Syntax.of_language_id (Text_document.languageId t.tdoc)
 
 let timer t = t.timer
 
-let source doc = Mpipeline.raw_source doc.pipeline
+let source t = Lazy.force t.msource
 
 let await task =
   let open Fiber.O in
@@ -113,9 +114,11 @@ let await task =
   | Error (`Exn e) -> Error e
   | Ok s -> Ok s
 
-let with_pipeline (doc : t) f =
-  Scheduler.async_exn doc.merlin (fun () ->
-      Mpipeline.with_pipeline doc.pipeline (fun () -> f doc.pipeline))
+let with_pipeline (t : t) f =
+  let open Fiber.O in
+  let* pipeline = Lazy_fiber.force t.pipeline in
+  Scheduler.async_exn t.merlin (fun () ->
+      Mpipeline.with_pipeline pipeline (fun () -> f pipeline))
   |> await
 
 let with_pipeline_exn doc f =
@@ -142,37 +145,39 @@ let make_config uri =
   Mconfig.get_external_config path mconfig
 
 let make_pipeline thread tdoc =
-  let async_make_pipeline =
-    Scheduler.async_exn thread (fun () ->
-        let text = Text_document.text tdoc in
-        let source = Msource.make text in
-        let config =
-          let uri = Text_document.documentUri tdoc in
-          make_config uri
-        in
-        Mpipeline.make config source)
+  let source =
+    lazy
+      (let text = Text_document.text tdoc in
+       Msource.make text)
   in
-  let open Fiber.O in
-  let+ res = await async_make_pipeline in
-  match res with
-  | Ok s -> s
-  | Error e -> Exn_with_backtrace.reraise e
+  ( source
+  , Lazy_fiber.create (fun () ->
+        let async_make_pipeline =
+          Scheduler.async_exn thread (fun () ->
+              let config =
+                let uri = Text_document.documentUri tdoc in
+                make_config uri
+              in
+              Mpipeline.make config (Lazy.force source))
+        in
+        let open Fiber.O in
+        let+ res = await async_make_pipeline in
+        match res with
+        | Ok s -> s
+        | Error e -> Exn_with_backtrace.reraise e) )
 
 let make timer merlin_thread tdoc =
   let tdoc = Text_document.make tdoc in
-  (* we can do that b/c all text positions in LSP are line/col *)
-  let open Fiber.O in
-  let+ pipeline = make_pipeline merlin_thread tdoc in
-  { tdoc; pipeline; merlin = merlin_thread; timer }
+  let msource, pipeline = make_pipeline merlin_thread tdoc in
+  { tdoc; pipeline; merlin = merlin_thread; timer; msource }
 
 let update_text ?version doc changes =
   let tdoc =
     List.fold_left changes ~init:doc.tdoc ~f:(fun acc change ->
         Text_document.apply_content_change ?version acc change)
   in
-  let open Fiber.O in
-  let+ pipeline = make_pipeline doc.merlin tdoc in
-  { doc with tdoc; pipeline }
+  let msource, pipeline = make_pipeline doc.merlin tdoc in
+  { doc with tdoc; pipeline; msource }
 
 let dispatch (doc : t) command =
   with_pipeline doc (fun pipeline -> Query_commands.dispatch pipeline command)
