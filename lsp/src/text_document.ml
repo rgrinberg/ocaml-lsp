@@ -57,7 +57,28 @@ end
    computed based on UTF-16. Therefore we reencode every file into utf16 for
    analysis. *)
 
-type t = TextDocumentItem.t
+type t =
+  { text_doc : TextDocumentItem.t
+  ; version : int
+  ; (* invariant : utf16 <> None || utf8 <> None *)
+    mutable utf16 : string option
+  ; mutable utf8 : string option
+  }
+
+let text t =
+  match t.utf8 with
+  | Some u -> u
+  | None ->
+    let utf8 =
+      let utf16 =
+        match t.utf16 with
+        | Some s -> s
+        | None -> assert false
+      in
+      Encoding.utf16_to_utf8 utf16
+    in
+    t.utf8 <- Some utf8;
+    utf8
 
 let utf16_offsetAt (text : string) ({ line; character } : Position.t) =
   if line < 0 then
@@ -74,9 +95,8 @@ let utf16_offsetAt (text : string) ({ line; character } : Position.t) =
 
 let byte_offsetAt t pos = 2 * utf16_offsetAt t pos
 
-let utf16_range_change (text_utf8 : string) ({ start; end_ } : Range.t)
-    change_utf16 =
-  let text = Encoding.utf8_to_utf16 text_utf8 in
+let utf16_range_change (text : string) ({ start; end_ } : Range.t) change_utf16
+    =
   let doc_length = String.length text in
   let start_ofs = byte_offsetAt text start in
   let end_ofs = byte_offsetAt text end_ in
@@ -86,15 +106,18 @@ let utf16_range_change (text_utf8 : string) ({ start; end_ } : Range.t)
   Buffer.add_substring buf text end_ofs (doc_length - end_ofs);
   Buffer.contents buf
 
-let make (t : DidOpenTextDocumentParams.t) = t.textDocument
+let make { DidOpenTextDocumentParams.textDocument } : t =
+  { utf8 = Some textDocument.text
+  ; utf16 = None
+  ; version = textDocument.version
+  ; text_doc = { textDocument with text = "" } (* to gc old refs *)
+  }
 
-let documentUri (t : t) = t.uri
+let documentUri (t : t) = t.text_doc.uri
 
-let version (t : t) = t.version
+let version (t : t) = t.text_doc.version
 
-let languageId (t : t) = t.languageId
-
-let text (t : t) = t.text
+let languageId (t : t) = t.text_doc.languageId
 
 let apply_content_change ?version (t : t)
     (change : TextDocumentContentChangeEvent.t) =
@@ -104,11 +127,18 @@ let apply_content_change ?version (t : t)
     | None -> t.version + 1
     | Some version -> version
   in
-  let change_text = Encoding.utf8_to_utf16 change.text in
-  let utf16_text =
-    match change.range with
-    | None -> change_text
-    | Some range -> utf16_range_change t.text range change_text
-  in
-  let utf8_text = Encoding.utf16_to_utf8 utf16_text in
-  { t with version; text = utf8_text }
+  match change.range with
+  | None -> { t with version; utf16 = None; utf8 = Some change.text }
+  | Some range ->
+    let utf16 =
+      utf16_range_change
+        (match t.utf16 with
+        | Some s -> s
+        | None -> (
+          match t.utf8 with
+          | None -> assert false
+          | Some s -> Encoding.utf8_to_utf16 s))
+        range
+        (Encoding.utf8_to_utf16 change.text)
+    in
+    { t with version; utf8 = None; utf16 = Some utf16 }
