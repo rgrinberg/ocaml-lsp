@@ -21,14 +21,14 @@ module Encoding = struct
 
   let nln = `ASCII (Uchar.of_char '\n')
 
-  let reencode_string in_enc out_enc str =
-    let buf = Buffer.create (String.length str) in
+  let reencode_string buf in_enc out_enc str =
+    Buffer.clear buf;
     let () = recode ~nln ~encoding:in_enc out_enc (`String str) (`Buffer buf) in
     Buffer.contents buf
 
-  let utf8_to_utf16 = reencode_string `UTF_8 `UTF_16LE
+  let utf8_to_utf16 buf = reencode_string buf `UTF_8 `UTF_16LE
 
-  let utf16_to_utf8 = reencode_string `UTF_16LE `UTF_8
+  let utf16_to_utf8 buf = reencode_string buf `UTF_16LE `UTF_8
 
   let utf16_line_offsets (text : string) =
     let rec loop d acc =
@@ -60,6 +60,7 @@ end
 type t =
   { text_doc : TextDocumentItem.t
   ; version : int
+  ; buffer : Buffer.t
   ; (* invariant : utf16 <> None || utf8 <> None *)
     mutable utf16 : string option
   ; mutable utf8 : string option
@@ -75,7 +76,7 @@ let text t =
         | Some s -> s
         | None -> assert false
       in
-      Encoding.utf16_to_utf8 utf16
+      Encoding.utf16_to_utf8 t.buffer utf16
     in
     t.utf8 <- Some utf8;
     utf8
@@ -95,12 +96,12 @@ let utf16_offsetAt (text : string) ({ line; character } : Position.t) =
 
 let byte_offsetAt t pos = 2 * utf16_offsetAt t pos
 
-let utf16_range_change (text : string) ({ start; end_ } : Range.t) change_utf16
-    =
+let utf16_range_change buf (text : string) ({ start; end_ } : Range.t)
+    change_utf16 =
+  Buffer.clear buf;
   let doc_length = String.length text in
   let start_ofs = byte_offsetAt text start in
   let end_ofs = byte_offsetAt text end_ in
-  let buf = Buffer.create (String.length change_utf16 + doc_length) in
   Buffer.add_substring buf text 0 start_ofs;
   Buffer.add_string buf change_utf16;
   Buffer.add_substring buf text end_ofs (doc_length - end_ofs);
@@ -108,6 +109,7 @@ let utf16_range_change (text : string) ({ start; end_ } : Range.t) change_utf16
 
 let make { DidOpenTextDocumentParams.textDocument } : t =
   { utf8 = Some textDocument.text
+  ; buffer = Buffer.create (String.length textDocument.text)
   ; utf16 = None
   ; version = textDocument.version
   ; text_doc = { textDocument with text = "" } (* to gc old refs *)
@@ -131,14 +133,14 @@ let apply_content_change ?version (t : t)
   | None -> { t with version; utf16 = None; utf8 = Some change.text }
   | Some range ->
     let utf16 =
-      utf16_range_change
+      utf16_range_change t.buffer
         (match t.utf16 with
         | Some s -> s
         | None -> (
           match t.utf8 with
           | None -> assert false
-          | Some s -> Encoding.utf8_to_utf16 s))
+          | Some s -> Encoding.utf8_to_utf16 t.buffer s))
         range
-        (Encoding.utf8_to_utf16 change.text)
+        (Encoding.utf8_to_utf16 t.buffer change.text)
     in
     { t with version; utf8 = None; utf16 = Some utf16 }
