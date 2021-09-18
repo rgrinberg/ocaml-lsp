@@ -60,26 +60,21 @@ end
 type t =
   { text_doc : TextDocumentItem.t
   ; version : int
-  ; buffer : Buffer.t
   ; (* invariant : utf16 <> None || utf8 <> None *)
-    mutable utf16 : string option
-  ; mutable utf8 : string option
+    utf16 : string option
+  ; utf8 : string option
   }
 
-let text t =
+let text t buffer =
   match t.utf8 with
   | Some u -> u
   | None ->
-    let utf8 =
-      let utf16 =
-        match t.utf16 with
-        | Some s -> s
-        | None -> assert false
-      in
-      Encoding.utf16_to_utf8 t.buffer utf16
+    let utf16 =
+      match t.utf16 with
+      | Some s -> s
+      | None -> assert false
     in
-    t.utf8 <- Some utf8;
-    utf8
+    Encoding.utf16_to_utf8 buffer utf16
 
 let utf16_offsetAt (text : string) ({ line; character } : Position.t) =
   if line < 0 then
@@ -109,7 +104,6 @@ let utf16_range_change buf (text : string) ({ start; end_ } : Range.t)
 
 let make { DidOpenTextDocumentParams.textDocument } : t =
   { utf8 = Some textDocument.text
-  ; buffer = Buffer.create (String.length textDocument.text)
   ; utf16 = None
   ; version = textDocument.version
   ; text_doc = { textDocument with text = "" } (* to gc old refs *)
@@ -121,7 +115,7 @@ let version (t : t) = t.text_doc.version
 
 let languageId (t : t) = t.text_doc.languageId
 
-let apply_content_change ?version (t : t)
+let apply_content_change ?version (t : t) buffer
     (change : TextDocumentContentChangeEvent.t) =
   (* Changes can only be applied using utf16 offsets *)
   let version =
@@ -133,14 +127,14 @@ let apply_content_change ?version (t : t)
   | None -> { t with version; utf16 = None; utf8 = Some change.text }
   | Some range ->
     let utf16 =
-      utf16_range_change t.buffer
+      utf16_range_change buffer
         (match t.utf16 with
         | Some s -> s
         | None -> (
           match t.utf8 with
           | None -> assert false
-          | Some s -> Encoding.utf8_to_utf16 t.buffer s))
+          | Some s -> Encoding.utf8_to_utf16 buffer s))
         range
-        (Encoding.utf8_to_utf16 t.buffer change.text)
+        (Encoding.utf8_to_utf16 buffer change.text)
     in
     { t with version; utf8 = None; utf16 = Some utf16 }
