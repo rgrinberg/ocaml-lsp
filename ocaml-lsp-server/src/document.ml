@@ -89,8 +89,6 @@ type t =
   ; pipeline : Mpipeline.t Lazy_fiber.t
   ; merlin : Scheduler.thread
   ; timer : Scheduler.timer
-  ; buffer_merlin : Buffer.t
-  ; buffer_t : Buffer.t
   }
 
 let uri doc = Text_document.documentUri doc.tdoc
@@ -146,8 +144,8 @@ let make_config uri =
   in
   Mconfig.get_external_config path mconfig
 
-let make_pipeline thread tdoc ~buffer_t ~buffer_merlin =
-  ( lazy (Msource.make (Text_document.text tdoc buffer_t))
+let make_pipeline thread tdoc =
+  ( lazy (Msource.make (Text_document.text tdoc))
   , Lazy_fiber.create (fun () ->
         let async_make_pipeline =
           Scheduler.async_exn thread (fun () ->
@@ -155,8 +153,7 @@ let make_pipeline thread tdoc ~buffer_t ~buffer_merlin =
                 let uri = Text_document.documentUri tdoc in
                 make_config uri
               in
-              Mpipeline.make config
-                (Msource.make (Text_document.text tdoc buffer_merlin)))
+              Mpipeline.make config (Msource.make (Text_document.text tdoc)))
         in
         let open Fiber.O in
         let+ res = await async_make_pipeline in
@@ -165,29 +162,16 @@ let make_pipeline thread tdoc ~buffer_t ~buffer_merlin =
         | Error e -> Exn_with_backtrace.reraise e) )
 
 let make timer merlin_thread (tdoc : DidOpenTextDocumentParams.t) =
-  let len = String.length tdoc.textDocument.text in
   let tdoc = Text_document.make tdoc in
-  let buffer_merlin = Buffer.create len in
-  let buffer_t = Buffer.create len in
-  let msource, pipeline =
-    make_pipeline merlin_thread tdoc ~buffer_t ~buffer_merlin
-  in
-  { tdoc
-  ; pipeline
-  ; merlin = merlin_thread
-  ; timer
-  ; msource
-  ; buffer_merlin
-  ; buffer_t
-  }
+  let msource, pipeline = make_pipeline merlin_thread tdoc in
+  { tdoc; pipeline; merlin = merlin_thread; timer; msource }
 
-let update_text ?version ({ merlin; buffer_t; buffer_merlin; tdoc; _ } as t)
-    changes =
+let update_text ?version ({ merlin; tdoc; _ } as t) changes =
   let tdoc =
     List.fold_left changes ~init:tdoc ~f:(fun acc change ->
-        Text_document.apply_content_change ?version acc buffer_t change)
+        Text_document.apply_content_change ?version acc change)
   in
-  let msource, pipeline = make_pipeline merlin tdoc ~buffer_t ~buffer_merlin in
+  let msource, pipeline = make_pipeline merlin tdoc in
   { t with tdoc; pipeline; msource }
 
 let dispatch (doc : t) command =

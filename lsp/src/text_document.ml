@@ -1,127 +1,59 @@
 open Types
+module String = StringLabels
 
-module Encoding : sig
-  val utf16_to_utf8 : Buffer.t -> string -> string
-
-  val utf8_to_utf16 : Buffer.t -> string -> string
-
-  val utf16_line_offsets : string -> int array
-end = struct
-  let recode ?nln ?encoding out_encoding
-      (src : [ `Channel of in_channel | `String of string ])
-      (dst : [ `Channel of out_channel | `Buffer of Buffer.t ]) =
-    let rec loop d e =
-      match Uutf.decode d with
+let find_offset ~utf8 ~(utf16_position : Position.t) =
+  let dec =
+    Uutf.decoder
+      ~nln:(`ASCII (Uchar.of_char '\n'))
+      ~encoding:`UTF_8 (`String utf8)
+  in
+  let rec find_char bytes enc char =
+    if char = 0 || Uutf.decoder_line dec = utf16_position.line then
+      Uutf.decoder_byte_count dec
+    else
+      match Uutf.decode dec with
+      | `Await -> assert false
+      | `End -> Uutf.decoder_byte_count dec
+      | `Malformed _ -> assert false
       | `Uchar _ as u ->
-        ignore (Uutf.encode e u);
-        loop d e
-      | `End -> ignore (Uutf.encode e `End)
-      | `Malformed _ ->
-        ignore (Uutf.encode e (`Uchar Uutf.u_rep));
-        loop d e
+        Uutf.Manual.dst enc bytes 0 4;
+        (match Uutf.encode enc u with
+        | `Partial -> assert false
+        | `Ok -> ());
+        let char = char - ((4 - Uutf.Manual.dst_rem enc) / 2) in
+        find_char bytes enc char
+  in
+  let rec find_line () =
+    if Uutf.decoder_line dec - 1 = utf16_position.line then
+      let enc = Uutf.encoder `UTF_16LE `Manual in
+      find_char (Bytes.create 4) enc utf16_position.character
+    else
+      match Uutf.decode dec with
+      | `Malformed _
+      | `Uchar _ ->
+        find_line ()
       | `Await -> assert false
-    in
-    let d = Uutf.decoder ?nln ?encoding src in
-    let e = Uutf.encoder out_encoding dst in
-    loop d e
-
-  let nln = `ASCII (Uchar.of_char '\n')
-
-  let reencode_string buf in_enc out_enc str =
-    Buffer.clear buf;
-    let () = recode ~nln ~encoding:in_enc out_enc (`String str) (`Buffer buf) in
-    Buffer.contents buf
-
-  let utf8_to_utf16 buf = reencode_string buf `UTF_8 `UTF_16LE
-
-  let utf16_to_utf8 buf = reencode_string buf `UTF_16LE `UTF_8
-
-  let utf16_line_offsets (text : string) =
-    let rec loop d acc =
-      let old_line = Uutf.decoder_line d in
-      match Uutf.decode d with
-      | `Uchar _
-      | `Malformed _ ->
-        let new_line = Uutf.decoder_line d in
-        if new_line > old_line then
-          let line_ofs = Uutf.decoder_byte_count d / 2 in
-          (* UTF16 encodes on 2 bytes *)
-          loop d (line_ofs :: acc)
-        else
-          loop d acc
-      | `End ->
-        let end_ofs = Uutf.decoder_byte_count d / 2 in
-        Array.of_list (List.rev (end_ofs :: acc))
-      | `Await -> assert false
-    in
-    let encoding = `UTF_16LE in
-    let decoder = Uutf.decoder ~nln ~encoding (`String text) in
-    loop decoder [ 0 ]
-end
+      | `End -> Uutf.decoder_byte_count dec
+  in
+  find_line ()
 
 (* Text is received as UTF-8. However, the protocol specifies offsets should be
    computed based on UTF-16. Therefore we reencode every file into utf16 for
    analysis. *)
 
-type t =
-  { text_doc : TextDocumentItem.t
-  ; version : int
-  ; (* invariant : utf16 <> None || utf8 <> None *)
-    utf16 : string option
-  ; utf8 : string option
-  }
+type t = TextDocumentItem.t
 
-let text t buffer =
-  match t.utf8 with
-  | Some u -> u
-  | None ->
-    let utf16 =
-      match t.utf16 with
-      | Some s -> s
-      | None -> assert false
-    in
-    Encoding.utf16_to_utf8 buffer utf16
+let text (t : TextDocumentItem.t) = t.text
 
-let utf16_offsetAt (text : string) ({ line; character } : Position.t) =
-  if line < 0 then
-    0
-  else
-    let lofs = Encoding.utf16_line_offsets text in
-    let al = Array.length lofs in
-    if line >= al - 1 then
-      lofs.(al - 1)
-    else
-      let this_lofs = lofs.(line) in
-      let next_line_offset = lofs.(line + 1) in
-      max (min (this_lofs + character) next_line_offset) this_lofs
+let make (t : DidOpenTextDocumentParams.t) = t.textDocument
 
-let byte_offsetAt t pos = 2 * utf16_offsetAt t pos
+let documentUri (t : TextDocumentItem.t) = t.uri
 
-let utf16_range_change buf (text : string) ({ start; end_ } : Range.t)
-    change_utf16 =
-  Buffer.clear buf;
-  let doc_length = String.length text in
-  let start_ofs = byte_offsetAt text start in
-  let end_ofs = byte_offsetAt text end_ in
-  Buffer.add_substring buf text 0 start_ofs;
-  Buffer.add_string buf change_utf16;
-  Buffer.add_substring buf text end_ofs (doc_length - end_ofs);
-  Buffer.contents buf
+let version (t : TextDocumentItem.t) = t.version
 
-let make { DidOpenTextDocumentParams.textDocument } : t =
-  { utf8 = Some textDocument.text
-  ; utf16 = None
-  ; version = textDocument.version
-  ; text_doc = { textDocument with text = "" } (* to gc old refs *)
-  }
+let languageId (t : TextDocumentItem.t) = t.languageId
 
-let documentUri (t : t) = t.text_doc.uri
-
-let version (t : t) = t.text_doc.version
-
-let languageId (t : t) = t.text_doc.languageId
-
-let apply_content_change ?version (t : t) buffer
+let apply_content_change ?version (t : TextDocumentItem.t)
     (change : TextDocumentContentChangeEvent.t) =
   (* Changes can only be applied using utf16 offsets *)
   let version =
@@ -130,17 +62,16 @@ let apply_content_change ?version (t : t) buffer
     | Some version -> version
   in
   match change.range with
-  | None -> { t with version; utf16 = None; utf8 = Some change.text }
-  | Some range ->
-    let utf16 =
-      utf16_range_change buffer
-        (match t.utf16 with
-        | Some s -> s
-        | None -> (
-          match t.utf8 with
-          | None -> assert false
-          | Some s -> Encoding.utf8_to_utf16 buffer s))
-        range
-        (Encoding.utf8_to_utf16 buffer change.text)
+  | None -> { t with version; text = change.text }
+  | Some { Range.start; end_ } ->
+    let start_offset = find_offset ~utf8:t.text ~utf16_position:start in
+    let end_offset = find_offset ~utf8:t.text ~utf16_position:end_ in
+    let text =
+      String.concat ~sep:""
+        [ String.sub t.text ~pos:0 ~len:start_offset
+        ; change.text
+        ; String.sub t.text ~pos:end_offset
+            ~len:(String.length t.text - end_offset)
+        ]
     in
-    { t with version; utf8 = None; utf16 = Some utf16 }
+    { t with text }
