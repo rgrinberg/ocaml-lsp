@@ -1,6 +1,12 @@
 open Types
 
-module Encoding = struct
+module Encoding : sig
+  val utf16_to_utf8 : Buffer.t -> string -> string
+
+  val utf8_to_utf16 : Buffer.t -> string -> string
+
+  val utf16_line_offsets : string -> int array
+end = struct
   let recode ?nln ?encoding out_encoding
       (src : [ `Channel of in_channel | `String of string ])
       (dst : [ `Channel of out_channel | `Buffer of Buffer.t ]) =
