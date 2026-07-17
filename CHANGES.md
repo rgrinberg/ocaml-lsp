@@ -2,6 +2,7 @@
 
 ## Fixes
 
+- Preserve document offsets across incremental text edits. (#1732)
 - Allow clients to add their first workspace folder dynamically. (#1747, @rgrinberg)
 - Unregister Dune promotion commands after their diagnostics are cleared. (#1746, @rgrinberg)
 - Point workspace symbols for generated sources to their files in the build

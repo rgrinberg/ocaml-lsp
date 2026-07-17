@@ -2412,5 +2412,5 @@ let f = function
       Client.notification client Exit
     in
     Fiber.fork_and_join_unit run_client run);
-  [%expect {| combine-cases available: false |}]
+  [%expect {| combine-cases available: true |}]
 ;;
