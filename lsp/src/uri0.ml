@@ -37,7 +37,7 @@ let of_path path =
   Uri_lexer.of_path path
 ;;
 
-let to_path { path; authority; scheme; query; _ } =
+let to_path { path; authority; scheme; query = _; _ } =
   let path =
     let len = String.length path in
     if len = 0
@@ -60,11 +60,6 @@ let to_path { path; authority; scheme; query; _ } =
           Buffer.add_char buff (Char.lowercase_ascii c1);
           Buffer.add_substring buff path 2 (String.length path - 2))
         else Buffer.add_string buff path);
-      (match query with
-       | None -> ()
-       | Some query ->
-         Buffer.add_char buff '?';
-         Buffer.add_string buff query);
       Buffer.contents buff)
   in
   if !Private.win32 then slash_to_backslash path else path
