@@ -196,7 +196,7 @@ end
     let* () = Lev_fiber.Timer.sleepf 0.05 in
     print_endline ("diagnostic publications: " ^ Int.to_string !publications);
     Test.shutdown_client client);
-  [%expect {| diagnostic publications: 1 |}]
+  [%expect {| diagnostic publications: 2 |}]
 ;;
 
 let%expect_test "no diagnostics for valid files" =

@@ -2,6 +2,7 @@
 
 ## Fixes
 
+- Recompute Merlin diagnostics when diagnostic shortening changes. (#1731)
 - Keep URI query parameters separate from filesystem paths. (#1776, @rgrinberg)
 - Correct code-action ranges after multiline text insertions. (#1748, @rgrinberg)
 - Allow clients to add their first workspace folder dynamically. (#1747, @rgrinberg)
