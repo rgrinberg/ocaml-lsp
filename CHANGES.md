@@ -2,6 +2,7 @@
 
 ## Fixes
 
+- Honor negotiated UTF-16 positions throughout server requests and responses. (#1733)
 - Keep URI query parameters separate from filesystem paths. (#1776, @rgrinberg)
 - Correct code-action ranges after multiline text insertions. (#1748, @rgrinberg)
 - Allow clients to add their first workspace folder dynamically. (#1747, @rgrinberg)
